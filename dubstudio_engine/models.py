@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 
+BANDIT_V2_SHA256 = "abcfccf65446752a057f4a302c941479a54b7560ebf8d7bca039d2ea98e64cfc"
+
+
 @dataclass
 class Word:
     start: float
@@ -46,10 +49,15 @@ class BanditSeparator:
         samples, sample_rate = sf.read(str(audio), dtype="float32", always_2d=True)
         if sample_rate != 48000:
             raise RuntimeError(f"Bandit v2 requires 48 kHz audio; received {sample_rate} Hz")
+        checkpoint = self.root / "models" / "weights" / "bandit-infer" / "checkpoint-multi.ckpt"
+        if not checkpoint.is_file():
+            raise RuntimeError(f"Bandit v2 model is missing: {checkpoint}")
         with BanditSession(
             "v2-multi",
             device="auto",
-            weights_dir=self.root / "models" / "weights" / "bandit-infer",
+            weights_dir=checkpoint.parent,
+            checkpoint_path=checkpoint,
+            checkpoint_sha256=BANDIT_V2_SHA256,
         ) as session:
             stems = session.infer(samples.T, sample_rate=sample_rate)
         mapping = {"dialogue": "speech", "music": "music", "sfx": "effects"}
@@ -205,25 +213,44 @@ class VoiceGenderAnalyzer:
 
 
 class Translator:
-    def __init__(self, root: Path) -> None:
-        from transformers import T5ForConditionalGeneration, T5Tokenizer
+    LANGUAGE_CODES = {
+        "zh": "zho_Hans",
+        "yue": "yue_Hant",
+        "en": "eng_Latn",
+        "hi": "hin_Deva",
+        "ja": "jpn_Jpan",
+        "ko": "kor_Hang",
+    }
 
-        model_path = local_model(root, "google/madlad400-3b-mt")
+    def __init__(self, root: Path) -> None:
+        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+        model_path = local_model(root, "facebook/nllb-200-distilled-600M")
         if not model_path.is_dir():
-            raise RuntimeError(f"MADLAD translation model is missing: {model_path}")
-        self.tokenizer = T5Tokenizer.from_pretrained(str(model_path), local_files_only=True)
-        self.model = T5ForConditionalGeneration.from_pretrained(
-            str(model_path), device_map="auto", local_files_only=True
+            raise RuntimeError(f"NLLB translation model is missing: {model_path}")
+        self.tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            str(model_path), low_cpu_mem_usage=True, local_files_only=True
         )
 
     def translate(self, segments: list[Segment], target: str) -> None:
-        target_tag = "hi" if target == "hi" else "en"
+        target_code = self.LANGUAGE_CODES.get(target, "hin_Deva")
+        forced_bos = self.tokenizer.convert_tokens_to_ids(target_code)
         batch_size = 8
         for offset in range(0, len(segments), batch_size):
             batch = segments[offset : offset + batch_size]
-            texts = [f"<2{target_tag}> {item.source_text}" for item in batch]
-            inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(self.model.device)
-            outputs = self.model.generate(**inputs, max_new_tokens=256, num_beams=4)
+            source_code = self.LANGUAGE_CODES.get(batch[0].source_language, "eng_Latn")
+            self.tokenizer.src_lang = source_code
+            texts = [item.source_text for item in batch]
+            inputs = self.tokenizer(
+                texts, return_tensors="pt", padding=True, truncation=True
+            ).to(self.model.device)
+            outputs = self.model.generate(
+                **inputs,
+                forced_bos_token_id=forced_bos,
+                max_new_tokens=256,
+                num_beams=4,
+            )
             translations = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
             for item, translation in zip(batch, translations, strict=True):
                 item.target_text = translation.strip()
@@ -255,8 +282,12 @@ class IndicParlerSynthesizer:
             str(model_path), local_files_only=True
         ).to(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True)
-        description_path = self.model.config.text_encoder._name_or_path
-        self.description_tokenizer = AutoTokenizer.from_pretrained(description_path)
+        description_path = local_model(root, "google/flan-t5-large")
+        if not description_path.is_dir():
+            raise RuntimeError(f"Parler description tokenizer is missing: {description_path}")
+        self.description_tokenizer = AutoTokenizer.from_pretrained(
+            str(description_path), local_files_only=True
+        )
 
     def synthesize(self, segment: Segment, destination: Path, variation: int = 0) -> None:
         import soundfile as sf

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -21,10 +22,19 @@ Reporter = Callable[[str, float], None]
 
 PARLER_SOURCE = "https://github.com/huggingface/parler-tts/archive/refs/heads/main.zip"
 BANDIT_SOURCE = "https://github.com/openmirlab/bandit-infer/archive/d45cdec634bf1ee01cdd2acea74a2d100e639c8a.zip"
+BANDIT_V2_SHA256 = "abcfccf65446752a057f4a302c941479a54b7560ebf8d7bca039d2ea98e64cfc"
 
 
 class InstallError(RuntimeError):
     pass
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _download(url: str, destination: Path, reporter: Reporter, start: float, end: float) -> None:
@@ -196,17 +206,38 @@ def install_pack(layout: StorageLayout, pack_id: str, token: str, reporter: Repo
         )
         revisions[repository] = "downloaded"
 
+    reporter("Downloading the local Parler description tokenizer", 0.86)
+    description_tokenizer = layout.path("models/hf/google/flan-t5-large")
+    snapshot_download(
+        repo_id="google/flan-t5-large",
+        local_dir=str(description_tokenizer),
+        token=token or None,
+        cache_dir=str(layout.path("cache/huggingface/hub")),
+        allow_patterns=[
+            "spiece.model",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+        ],
+        local_dir_use_symlinks=False,
+    )
+    revisions["google/flan-t5-large-tokenizer"] = "downloaded"
+
     if pack_id in {"fast", "balanced", "studio"}:
         reporter("Downloading verified Bandit v2 cinematic separation weights", 0.88)
         # bandit-infer validates the official checkpoint with SHA-256 and honors
         # BANDIT_INFER_WEIGHTS, which StorageLayout locks beneath the chosen root.
         from bandit_infer import BanditSession
 
-        session = BanditSession(
-            "v2-multi",
-            device="auto",
-            weights_dir=layout.path("models/weights/bandit-infer"),
-        )
+        weights_dir = layout.path("models/weights/bandit-infer")
+        checkpoint = weights_dir / "checkpoint-multi.ckpt"
+        if checkpoint.is_file() and _sha256(checkpoint) != BANDIT_V2_SHA256:
+            # An interrupted transfer can leave a complete-looking file. Only
+            # remove this exact managed checkpoint, then let Bandit download its
+            # official atomically verified copy again.
+            checkpoint.unlink()
+            reporter("Repairing an incomplete Bandit v2 download", 0.89)
+        session = BanditSession("v2-multi", device="auto", weights_dir=weights_dir)
         try:
             session.load()
         finally:

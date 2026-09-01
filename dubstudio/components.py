@@ -23,7 +23,7 @@ MODEL_PACKS = {
         "approx_gb": 14,
         "models": [
             "Systran/faster-whisper-small",
-            "google/madlad400-3b-mt",
+            "facebook/nllb-200-distilled-600M",
             "ai4bharat/indic-parler-tts",
             "kwatcharasupat/bandit-v2",
         ],
@@ -33,7 +33,7 @@ MODEL_PACKS = {
         "approx_gb": 19,
         "models": [
             "Systran/faster-whisper-large-v3",
-            "google/madlad400-3b-mt",
+            "facebook/nllb-200-distilled-600M",
             "ai4bharat/indic-parler-tts",
             "pyannote/speaker-diarization-community-1",
             "kwatcharasupat/bandit-v2",
@@ -45,7 +45,7 @@ MODEL_PACKS = {
         "models": [
             "Systran/faster-whisper-large-v3",
             "FunAudioLLM/SenseVoiceSmall",
-            "google/madlad400-3b-mt",
+            "facebook/nllb-200-distilled-600M",
             "ai4bharat/indic-parler-tts",
             "pyannote/speaker-diarization-community-1",
             "kwatcharasupat/bandit-v2",

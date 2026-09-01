@@ -1,6 +1,6 @@
 param(
   [string]$Python = "python",
-  [string]$Version = "0.1.5",
+  [string]$Version = "0.1.6",
   [string]$Repository = "",
   [string]$ExpectedPublisher = ""
 )

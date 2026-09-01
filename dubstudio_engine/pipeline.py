@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gc
 from pathlib import Path
 from typing import Callable
 
@@ -9,6 +10,7 @@ from .models import (
     BanditSeparator,
     EmotionAnalyzer,
     IndicParlerSynthesizer,
+    Segment,
     SpeakerDiarizer,
     Translator,
     VoiceGenderAnalyzer,
@@ -18,6 +20,17 @@ from .models import (
 
 
 Emitter = Callable[[str, float, str], None]
+
+
+def _release_models() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
 
 def _assert_inside(root: Path, path: Path) -> None:
@@ -50,12 +63,17 @@ def run_project(request: dict[str, str], emit: Emitter) -> None:
     emit("Transcribing", 0.28, "Recognizing dialogue with word-level timestamps")
     transcriber = WhisperTranscriber(root, project["quality"])
     segments = transcriber.transcribe(dialogue, project["source_language"])
+    del transcriber
+    _release_models()
     if not segments:
         raise RuntimeError("No dialogue was detected in the selected media")
 
     if project["quality"] != "Fast":
         emit("Detecting speakers", 0.38, "Keeping a consistent fixed voice for each speaker")
-        SpeakerDiarizer(root).assign(dialogue, segments)
+        diarizer = SpeakerDiarizer(root)
+        diarizer.assign(dialogue, segments)
+        del diarizer
+        _release_models()
     emit("Matching voice families", 0.43, "Estimating each speaker's vocal range from clean dialogue")
     speakers = sorted({item.speaker for item in segments})
     gender_analyzer = VoiceGenderAnalyzer()
@@ -89,17 +107,22 @@ def run_project(request: dict[str, str], emit: Emitter) -> None:
 
     if project["quality"] == "Studio":
         emit("Analyzing emotion", 0.46, "Reading tone, emotion and non-verbal performance")
-        analyzer = EmotionAnalyzer(root)
+        source_analyzer = EmotionAnalyzer(root)
         clip_dir = project_dir / "audio" / "emotion-clips"
         for index, segment in enumerate(segments):
             clip = clip_dir / f"{segment.segment_id:06d}.wav"
             media.extract_clip(dialogue, segment.start, segment.end, clip)
-            segment.emotion, segment.emotion_confidence = analyzer.analyze(clip)
+            segment.emotion, segment.emotion_confidence = source_analyzer.analyze(clip)
             if index % 10 == 0:
                 emit("Analyzing emotion", 0.46 + 0.06 * (index / len(segments)), f"Line {index + 1} of {len(segments)}")
+        del source_analyzer
+        _release_models()
 
     emit("Translating", 0.54, "Creating context-safe Hindi dialogue")
-    Translator(root).translate(segments, project["target_language"])
+    translator = Translator(root)
+    translator.translate(segments, project["target_language"])
+    del translator
+    _release_models()
     save_segments(segments, project_dir / "translations" / "timeline.json")
 
     emit("Generating voices", 0.67, "Producing clean fixed-voice emotional takes")
@@ -107,11 +130,30 @@ def run_project(request: dict[str, str], emit: Emitter) -> None:
     candidate_dir = project_dir / "takes" / "candidates"
     take_dir = project_dir / "takes" / "selected"
     fitted_dir = project_dir / "takes" / "fitted"
+    candidate_sets: list[tuple[Segment, list[Path], float]] = []
+    take_count = 1 if project["quality"] == "Fast" else 2 if project["quality"] == "Balanced" else 3
+    for index, segment in enumerate(segments):
+        target_duration = max(0.05, segment.end - segment.start)
+        candidates: list[Path] = []
+        for variation in range(take_count):
+            candidate = candidate_dir / f"{segment.segment_id:06d}-{variation + 1}.wav"
+            synthesizer.synthesize(segment, candidate, variation)
+            candidates.append(candidate)
+        candidate_sets.append((segment, candidates, target_duration))
+        emit(
+            "Generating voices",
+            0.67 + 0.16 * ((index + 1) / len(segments)),
+            f"Line {index + 1} of {len(segments)} • {segment.voice} • {segment.emotion}",
+        )
+    del synthesizer
+    _release_models()
+
+    emit("Selecting takes", 0.84, "Matching timing and emotion across generated takes")
+    take_analyzer = EmotionAnalyzer(root) if project["quality"] == "Studio" else None
     timeline_files: list[Path] = []
     take_scores: list[dict[str, object]] = []
     cursor = 0.0
-    take_count = 1 if project["quality"] == "Fast" else 2 if project["quality"] == "Balanced" else 3
-    for index, segment in enumerate(segments):
+    for index, (segment, candidates, target_duration) in enumerate(candidate_sets):
         gap = max(0.0, segment.start - cursor)
         if gap > 0.001:
             silence = fitted_dir / f"{segment.segment_id:06d}-gap.wav"
@@ -120,15 +162,12 @@ def run_project(request: dict[str, str], emit: Emitter) -> None:
         raw_take = take_dir / f"{segment.segment_id:06d}.wav"
         fitted_take = fitted_dir / f"{segment.segment_id:06d}.wav"
         scored: list[tuple[float, Path, str]] = []
-        target_duration = max(0.05, segment.end - segment.start)
-        for variation in range(take_count):
-            candidate = candidate_dir / f"{segment.segment_id:06d}-{variation + 1}.wav"
-            synthesizer.synthesize(segment, candidate, variation)
+        for candidate in candidates:
             timing_error = abs(media.duration(candidate) - target_duration) / target_duration
             detected_emotion = "not-scored"
             emotion_penalty = 0.0
-            if project["quality"] == "Studio":
-                detected_emotion, confidence = analyzer.analyze(candidate)
+            if take_analyzer is not None:
+                detected_emotion, confidence = take_analyzer.analyze(candidate)
                 if detected_emotion != segment.emotion:
                     emotion_penalty = 0.35 * confidence
             scored.append((timing_error + emotion_penalty, candidate, detected_emotion))
@@ -148,10 +187,12 @@ def run_project(request: dict[str, str], emit: Emitter) -> None:
         timeline_files.append(fitted_take)
         cursor = segment.end
         emit(
-            "Generating voices",
-            0.67 + 0.20 * ((index + 1) / len(segments)),
+            "Selecting takes",
+            0.84 + 0.05 * ((index + 1) / len(candidate_sets)),
             f"Line {index + 1} of {len(segments)} • {segment.voice} • {segment.emotion}",
         )
+    del take_analyzer
+    _release_models()
     (project_dir / "takes" / "take-scores.json").write_text(
         json.dumps(take_scores, ensure_ascii=False, indent=2), encoding="utf-8"
     )
