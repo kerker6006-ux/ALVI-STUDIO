@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+.venv/
+.build-tools/
+build/
+dist/
+artifacts/
+DubStudio-data/
+*.spec
+

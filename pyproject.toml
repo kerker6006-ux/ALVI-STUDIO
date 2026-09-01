@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alvi-studio"
+version = "0.1.1"
+description = "Private, local-first AI dubbing studio for Windows"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Alvi Studio contributors" }]
+
+[project.scripts]
+dubstudio = "dubstudio.app:main"
+
+[tool.setuptools.packages.find]
+include = ["dubstudio*"]
+
+[tool.setuptools.package-data]
+dubstudio = ["assets/*.json"]
