@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import Callable
 from .components import ComponentManager
 from .project import DubProject, ProjectStore
 from .storage import StorageLayout
+
+
+logger = logging.getLogger("alvi_studio.pipeline")
 
 
 ProgressCallback = Callable[[str, float, str], None]
@@ -49,6 +53,7 @@ class DubbingPipeline:
             )
 
     def run(self, project: DubProject, progress: ProgressCallback) -> PipelineResult:
+        logger.info("Pipeline started; project=%s", project.project_id)
         project.status = "running"
         project.current_stage = "Preflight"
         project.progress = 0.01
@@ -76,12 +81,14 @@ class DubbingPipeline:
             project.progress = 1.0
             self.projects.save(project)
             progress("Complete", 1.0, str(output_file))
+            logger.info("Pipeline complete; project=%s output=%s", project.project_id, output_file)
             return PipelineResult(project_file, output_file)
         except Exception as exc:
             project.status = "failed"
             project.current_stage = "Failed"
             project.error = str(exc)
             self.projects.save(project)
+            logger.exception("Pipeline failed; project=%s", project.project_id)
             raise
 
     def _run_worker(
@@ -107,23 +114,29 @@ class DubbingPipeline:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         assert process.stdout is not None
-        for line in process.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except ValueError:
-                progress(project.current_stage, project.progress, line)
-                continue
-            stage = str(event.get("stage", project.current_stage))
-            value = float(event.get("progress", project.progress))
-            message = str(event.get("message", ""))
-            project.current_stage = stage
-            project.progress = max(0.0, min(1.0, value))
-            self.projects.save(project)
-            progress(stage, project.progress, message)
+        worker_log = self.layout.path("logs/dubbing-worker.log")
+        with worker_log.open("a", encoding="utf-8") as log:
+            log.write(f"\n--- Project {project.project_id} ---\n")
+            for raw_line in process.stdout:
+                log.write(raw_line)
+                log.flush()
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    progress(project.current_stage, project.progress, line)
+                    continue
+                stage = str(event.get("stage", project.current_stage))
+                value = float(event.get("progress", project.progress))
+                message = str(event.get("message", ""))
+                project.current_stage = stage
+                project.progress = max(0.0, min(1.0, value))
+                self.projects.save(project)
+                progress(stage, project.progress, message)
         return_code = process.wait()
         if return_code:
-            raise PipelineError(f"AI worker stopped with exit code {return_code}")
-
+            raise PipelineError(
+                f"AI worker stopped with exit code {return_code}. Diagnostic log: {worker_log}"
+            )

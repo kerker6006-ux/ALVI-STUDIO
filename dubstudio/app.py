@@ -16,6 +16,7 @@ from .constants import (
     SOURCE_LANGUAGES,
     TARGET_LANGUAGES,
 )
+from .diagnostics import configure_logging, get_logger
 from .pipeline import DubbingPipeline, MissingComponentError
 from .project import DubProject, ProjectStore
 from .settings import AppSettings, SettingsStore
@@ -45,6 +46,8 @@ class AlviStudioApp(tk.Tk):
         self.components = ComponentManager(layout)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.active_thread: threading.Thread | None = None
+        self.logger = get_logger("app")
+        self.logger.info("Alvi Studio %s started; storage_root=%s", APP_VERSION, self.layout.root)
 
         self.title(f"{APP_NAME} {APP_VERSION}")
         self.geometry("1120x760")
@@ -275,6 +278,7 @@ class AlviStudioApp(tk.Tk):
         button_row = ttk.Frame(storage, style="Subtle.TFrame")
         button_row.pack(fill="x", pady=(10, 0))
         ttk.Button(button_row, text="Open folder", command=lambda: self._open_folder(self.layout.root)).pack(side="left")
+        ttk.Button(button_row, text="Open logs", command=lambda: self._open_folder(self.layout.logs)).pack(side="left", padx=(8, 0))
         ttk.Button(button_row, text="Run storage audit", command=self._run_storage_audit).pack(side="left", padx=8)
         self.install_button = ttk.Button(
             button_row,
@@ -406,6 +410,13 @@ class AlviStudioApp(tk.Tk):
                 "master": self.settings.master_volume,
             },
         )
+        self.logger.info(
+            "Dub requested; project=%s source=%s target=%s quality=%s",
+            project.project_id,
+            project.source_language,
+            project.target_language,
+            project.quality,
+        )
         self.progress_var.set(0.0)
         self.start_button.configure(state="disabled")
         self.active_thread = threading.Thread(target=self._run_project, args=(project,), daemon=True)
@@ -419,8 +430,10 @@ class AlviStudioApp(tk.Tk):
             )
             self.events.put(("complete", result))
         except MissingComponentError as exc:
+            self.logger.warning("Dub preflight blocked; project=%s error=%s", project.project_id, exc)
             self.events.put(("missing", str(exc)))
         except Exception as exc:
+            self.logger.exception("Dub failed; project=%s", project.project_id)
             self.events.put(("error", str(exc)))
 
     def _drain_events(self) -> None:
@@ -517,6 +530,7 @@ class AlviStudioApp(tk.Tk):
                 show="•",
             ) or ""
         self.install_button.configure(state="disabled")
+        self.logger.info("Model-pack installation requested; pack=%s root=%s", quality, self.layout.root)
         self.progress_var.set(0.0)
         self.stage_var.set("Installing models")
         self.detail_var.set(f"Everything is being written to {self.layout.root}")
@@ -540,43 +554,55 @@ class AlviStudioApp(tk.Tk):
         environment = dict(os.environ)
         if token:
             environment["HF_TOKEN"] = token
-        process = subprocess.Popen(
-            command,
-            cwd=str(self.layout.root),
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        assert process.stdout is not None
-        error = ""
-        current_progress = 0.0
-        for line in process.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = __import__("json").loads(line)
-                if event.get("error"):
-                    error = str(event["error"])
-                else:
-                    current_progress = float(event.get("progress", current_progress))
-                    self.events.put(
-                        (
-                            "progress",
-                            ("Installing models", current_progress, str(event.get("message", ""))),
-                        )
-                    )
-            except ValueError:
-                self.events.put(("progress", ("Installing models", current_progress, line[-180:])))
-        code = process.wait()
-        if code:
-            self.events.put(("install-error", error or f"Model installer stopped with exit code {code}"))
-        else:
-            self.events.put(("install-complete", quality))
+        worker_log = self.layout.path("logs/model-worker.log")
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(self.layout.root),
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            assert process.stdout is not None
+            error = ""
+            current_progress = 0.0
+            with worker_log.open("a", encoding="utf-8") as log:
+                log.write(f"\n--- Installing {quality} model pack ---\n")
+                for raw_line in process.stdout:
+                    log.write(raw_line)
+                    log.flush()
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = __import__("json").loads(line)
+                        if event.get("error"):
+                            error = str(event["error"])
+                        else:
+                            current_progress = float(event.get("progress", current_progress))
+                            self.events.put(
+                                (
+                                    "progress",
+                                    ("Installing models", current_progress, str(event.get("message", ""))),
+                                )
+                            )
+                    except ValueError:
+                        self.events.put(("progress", ("Installing models", current_progress, line[-180:])))
+            code = process.wait()
+            if code:
+                message = error or f"Model installer stopped with exit code {code}"
+                self.logger.error("Model-pack installation failed; pack=%s code=%s log=%s error=%s", quality, code, worker_log, message)
+                self.events.put(("install-error", f"{message}\n\nDiagnostic log: {worker_log}"))
+            else:
+                self.logger.info("Model-pack installation complete; pack=%s", quality)
+                self.events.put(("install-complete", quality))
+        except Exception as exc:
+            self.logger.exception("Could not run model installer; pack=%s", quality)
+            self.events.put(("install-error", f"{exc}\n\nDiagnostic log: {worker_log}"))
 
     def _run_storage_audit(self) -> None:
         try:
@@ -615,6 +641,7 @@ class AlviStudioApp(tk.Tk):
                 else:
                     self.events.put(("update-none", not silent))
             except Exception as exc:
+                self.logger.exception("Update check failed; repository=%s", repository)
                 self.events.put(("update-error", "" if silent else str(exc)))
 
         threading.Thread(target=check, daemon=True).start()
@@ -625,6 +652,7 @@ class AlviStudioApp(tk.Tk):
             installer = updater.download(update)
             self.events.put(("update-ready", (updater, installer)))
         except Exception as exc:
+            self.logger.exception("Update download failed; version=%s", update.version)
             self.events.put(("update-error", str(exc)))
 
     def _load_recent_projects(self) -> None:
@@ -654,6 +682,7 @@ class AlviStudioApp(tk.Tk):
         if self.active_thread and self.active_thread.is_alive():
             if not messagebox.askyesno(APP_NAME, "A job is still running. Close the window anyway?"):
                 return
+        self.logger.info("Alvi Studio closed")
         self.destroy()
 
 
@@ -665,6 +694,7 @@ def main() -> None:
         root.withdraw()
         messagebox.showerror("Alvi Studio could not start", str(exc))
         raise SystemExit(1) from exc
+    configure_logging(layout)
     app = AlviStudioApp(layout)
     app.mainloop()
 

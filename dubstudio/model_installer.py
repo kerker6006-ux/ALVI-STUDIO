@@ -13,12 +13,14 @@ from pathlib import Path
 from typing import Callable
 
 from .components import MODEL_PACKS, ComponentManager
+from .diagnostics import configure_logging, get_logger
 from .storage import StorageLayout
 
 
 Reporter = Callable[[str, float], None]
 
 PARLER_SOURCE = "https://github.com/huggingface/parler-tts/archive/refs/heads/main.zip"
+BANDIT_SOURCE = "https://github.com/openmirlab/bandit-infer/archive/d45cdec634bf1ee01cdd2acea74a2d100e639c8a.zip"
 
 
 class InstallError(RuntimeError):
@@ -60,6 +62,7 @@ def _extract_single_root(archive: Path, destination: Path) -> None:
 
 def _run_pip(python: Path, arguments: list[str], layout: StorageLayout, reporter: Reporter) -> None:
     command = [str(python), "-m", "pip", "--disable-pip-version-check", *arguments]
+    log_path = layout.path("logs/model-install.log")
     process = subprocess.Popen(
         command,
         cwd=str(layout.root),
@@ -72,12 +75,16 @@ def _run_pip(python: Path, arguments: list[str], layout: StorageLayout, reporter
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert process.stdout is not None
-    for line in process.stdout:
-        line = line.strip()
-        if line:
-            reporter(line[-180:], 0.08)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(f"\n$ {' '.join(command)}\n")
+        for line in process.stdout:
+            log.write(line)
+            log.flush()
+            line = line.strip()
+            if line:
+                reporter(line[-180:], 0.08)
     if process.wait():
-        raise InstallError("Python engine dependency installation failed")
+        raise InstallError(f"Python engine dependency installation failed. Details: {log_path}")
 
 
 def install_pack(layout: StorageLayout, pack_id: str, token: str, reporter: Reporter) -> None:
@@ -94,6 +101,23 @@ def install_pack(layout: StorageLayout, pack_id: str, token: str, reporter: Repo
     if not python:
         raise InstallError("The private Python runtime was not bundled with this installation")
 
+    pip_cache = str(layout.path("cache/pip"))
+    reporter("Preparing private Python build tools", 0.01)
+    _run_pip(
+        python,
+        [
+            "install",
+            "--upgrade",
+            "--cache-dir",
+            pip_cache,
+            "setuptools>=75",
+            "wheel>=0.45",
+            "hatchling>=1.27",
+        ],
+        layout,
+        reporter,
+    )
+
     reporter("Installing private engine dependencies", 0.02)
     requirements = layout.path("app/requirements-engine.txt")
     if not requirements.is_file():
@@ -104,9 +128,22 @@ def install_pack(layout: StorageLayout, pack_id: str, token: str, reporter: Repo
             "install",
             "--upgrade",
             "--cache-dir",
-            str(layout.path("cache/pip")),
+            pip_cache,
             "-r",
             str(requirements),
+        ],
+        layout,
+        reporter,
+    )
+    reporter("Installing Bandit cinematic separation engine", 0.07)
+    _run_pip(
+        python,
+        [
+            "install",
+            "--no-build-isolation",
+            "--cache-dir",
+            pip_cache,
+            BANDIT_SOURCE,
         ],
         layout,
         reporter,
@@ -121,7 +158,22 @@ def install_pack(layout: StorageLayout, pack_id: str, token: str, reporter: Repo
     _extract_single_root(parler_zip, parler_source)
     _run_pip(
         python,
-        ["install", "--cache-dir", str(layout.path("cache/pip")), str(parler_source)],
+        ["install", "--no-build-isolation", "--cache-dir", pip_cache, str(parler_source)],
+        layout,
+        reporter,
+    )
+    # Parler's audio toolkit declares an old protobuf ceiling, while current
+    # pyannote telemetry requires protobuf 6+. Its audio path works with the
+    # current runtime, so restore the shared version after Parler installation.
+    _run_pip(
+        python,
+        [
+            "install",
+            "--upgrade",
+            "--cache-dir",
+            pip_cache,
+            "protobuf>=6.33.5,<8",
+        ],
         layout,
         reporter,
     )
@@ -172,6 +224,9 @@ def main() -> None:
     parser.add_argument("--token", default="")
     args = parser.parse_args()
     layout = StorageLayout.create(args.root)
+    configure_logging(layout)
+    logger = get_logger("model-installer")
+    logger.info("Model installer started; pack=%s root=%s", args.pack, layout.root)
 
     def report(message: str, progress: float) -> None:
         print(json.dumps({"message": message, "progress": progress}), flush=True)
@@ -179,8 +234,10 @@ def main() -> None:
     try:
         install_pack(layout, args.pack, args.token, report)
     except Exception as exc:
+        logger.exception("Model installer failed; pack=%s", args.pack)
         print(json.dumps({"error": str(exc)}), flush=True)
         raise SystemExit(1) from exc
+    logger.info("Model installer completed; pack=%s", args.pack)
 
 
 if __name__ == "__main__":

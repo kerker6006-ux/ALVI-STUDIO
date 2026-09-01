@@ -1,9 +1,11 @@
 # Installed only into <selected drive>\Alvi Studio\runtime\python.
 # The UI and installer work without these heavy packages.
-torch>=2.6
-torchaudio>=2.6
+# TorchAudio 2.11 uses PyTorch's stable ABI and officially supports Torch 2.11+.
+torch>=2.11
+torchaudio==2.11.0
 faster-whisper>=1.1.1
-transformers>=4.48,<5
+# Parler TTS 0.2.2 requires this exact Transformers release.
+transformers==4.46.1
 accelerate>=1.3
 safetensors>=0.5
 sentencepiece>=0.2
@@ -11,9 +13,9 @@ soundfile>=0.13
 pyannote.audio>=4.0
 funasr>=1.3.29
 huggingface-hub>=0.28
+protobuf>=6.33.5,<8
 omegaconf>=2.3
 hydra-core>=1.3
 pytorch-lightning>=2.5
 einops>=0.8
 librosa>=0.10
-bandit-infer @ https://github.com/openmirlab/bandit-infer/archive/d45cdec634bf1ee01cdd2acea74a2d100e639c8a.zip

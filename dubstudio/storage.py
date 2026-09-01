@@ -139,6 +139,15 @@ class StorageLayout:
             Path(value).mkdir(parents=True, exist_ok=True)
             os.environ[name] = str(value)
 
+        # Let TorchCodec, audio libraries and subprocesses find the copy of
+        # FFmpeg bundled on the selected drive without installing it on C:.
+        ffmpeg_bin = self.path("tools/ffmpeg/bin")
+        if ffmpeg_bin.is_dir():
+            current_path = os.environ.get("PATH", "")
+            entries = [item for item in current_path.split(os.pathsep) if item]
+            if str(ffmpeg_bin).casefold() not in {item.casefold() for item in entries}:
+                os.environ["PATH"] = os.pathsep.join([str(ffmpeg_bin), *entries])
+
     def audit(self) -> list[Path]:
         checked = [self.root]
         for directory in DIRECTORIES:
