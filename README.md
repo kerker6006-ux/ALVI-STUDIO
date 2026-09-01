@@ -78,7 +78,7 @@ python -m unittest discover -s tests -v
 Build the installer (requires network access for official Python and FFmpeg archives and NSIS on `PATH`):
 
 ```powershell
-.\packaging\build.ps1 -Python python -Version 0.1.2 -Repository "owner/repository" -ExpectedPublisher "Your signing publisher"
+.\packaging\build.ps1 -Python python -Version 0.1.3 -Repository "owner/repository" -ExpectedPublisher "Your signing publisher"
 ```
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing model-powered builds or outputs.

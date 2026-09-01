@@ -1,6 +1,6 @@
 param(
   [string]$Python = "python",
-  [string]$Version = "0.1.2",
+  [string]$Version = "0.1.3",
   [string]$Repository = "",
   [string]$ExpectedPublisher = ""
 )
@@ -89,7 +89,19 @@ $FfmpegBin = Get-ChildItem -LiteralPath $FfmpegExtract -Directory | Select-Objec
 New-Item -ItemType Directory -Force -Path (Join-Path $BundleRoot "tools\ffmpeg\bin") | Out-Null
 Copy-Item -Force (Join-Path $FfmpegBin "ffmpeg.exe"), (Join-Path $FfmpegBin "ffprobe.exe") (Join-Path $BundleRoot "tools\ffmpeg\bin")
 
-$Makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
+$Makensis = $null
+$MakensisCommand = Get-Command makensis.exe -ErrorAction SilentlyContinue
+if ($MakensisCommand) {
+  $Makensis = $MakensisCommand.Source
+}
+if (-not $Makensis) {
+  $MakensisCandidates = @(
+    (Join-Path $env:ProgramFiles "NSIS\makensis.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe")
+  )
+  $Makensis = $MakensisCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+}
+if (-not $Makensis) { throw "NSIS makensis.exe was not found" }
 & $Makensis "/DBUNDLE_DIR=$BundleRoot" "/DOUTPUT_DIR=$ArtifactRoot" "/DAPP_VERSION=$Version" (Join-Path $PSScriptRoot "DubStudio.nsi")
 Assert-NativeSuccess "Building the Windows installer"
 $Installer = Join-Path $ArtifactRoot "Alvi-Studio-Setup.exe"

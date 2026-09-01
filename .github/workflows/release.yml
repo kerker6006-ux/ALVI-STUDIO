@@ -30,7 +30,7 @@ jobs:
         shell: powershell
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          if (-not $version) { $version = "0.1.2" }
+          if (-not $version) { $version = "0.1.3" }
           ./packaging/build.ps1 -Python python -Version $version -Repository "${{ github.repository }}" -ExpectedPublisher "${{ vars.WINDOWS_SIGNING_PUBLISHER }}"
 
       - name: Import Windows signing certificate

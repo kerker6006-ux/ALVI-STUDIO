@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "Alvi Studio"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 
 DIRECTORIES = (
     "app",
