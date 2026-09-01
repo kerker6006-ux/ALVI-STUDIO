@@ -7,7 +7,7 @@ Unicode True
   !define OUTPUT_DIR "artifacts"
 !endif
 !ifndef APP_VERSION
-  !define APP_VERSION "0.1.1"
+  !define APP_VERSION "0.1.2"
 !endif
 
 !include "MUI2.nsh"

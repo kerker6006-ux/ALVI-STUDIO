@@ -12,6 +12,9 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,21 +30,21 @@ jobs:
         shell: powershell
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          if (-not $version) { $version = "0.1.1" }
+          if (-not $version) { $version = "0.1.2" }
           ./packaging/build.ps1 -Python python -Version $version -Repository "${{ github.repository }}" -ExpectedPublisher "${{ vars.WINDOWS_SIGNING_PUBLISHER }}"
 
       - name: Import Windows signing certificate
-        if: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
         shell: powershell
         run: |
-          $bytes = [Convert]::FromBase64String("${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}")
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64)
           [IO.File]::WriteAllBytes("certificate.pfx", $bytes)
 
       - name: Sign installer
-        if: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
         shell: powershell
         run: |
-          & signtool sign /fd SHA256 /f certificate.pfx /p "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}" /tr http://timestamp.digicert.com /td SHA256 artifacts/Alvi-Studio-Setup.exe
+          & signtool sign /fd SHA256 /f certificate.pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td SHA256 artifacts/Alvi-Studio-Setup.exe
           $hash = (Get-FileHash -Algorithm SHA256 artifacts/Alvi-Studio-Setup.exe).Hash.ToLowerInvariant()
           Set-Content artifacts/Alvi-Studio-Setup.exe.sha256 "$hash  Alvi-Studio-Setup.exe" -Encoding ASCII
 
