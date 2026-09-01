@@ -24,13 +24,24 @@ jobs:
 
       - name: Install NSIS
         shell: powershell
-        run: choco install nsis --yes --no-progress
+        run: |
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          for ($attempt = 1; $attempt -le 3 -and -not (Test-Path -LiteralPath $makensis); $attempt++) {
+            Write-Host "Installing NSIS (attempt $attempt of 3)"
+            choco install nsis --yes --no-progress --force
+            if (-not (Test-Path -LiteralPath $makensis) -and $attempt -lt 3) {
+              Start-Sleep -Seconds 15
+            }
+          }
+          if (-not (Test-Path -LiteralPath $makensis)) {
+            throw "NSIS installation did not produce $makensis"
+          }
 
       - name: Build selectable-folder installer
         shell: powershell
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          if (-not $version) { $version = "0.1.4" }
+          if (-not $version) { $version = "0.1.7" }
           ./packaging/build.ps1 -Python python -Version $version -Repository "${{ github.repository }}" -ExpectedPublisher "${{ vars.WINDOWS_SIGNING_PUBLISHER }}"
 
       - name: Import Windows signing certificate
