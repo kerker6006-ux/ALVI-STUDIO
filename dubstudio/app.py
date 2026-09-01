@@ -276,6 +276,13 @@ class AlviStudioApp(tk.Tk):
         button_row.pack(fill="x", pady=(10, 0))
         ttk.Button(button_row, text="Open folder", command=lambda: self._open_folder(self.layout.root)).pack(side="left")
         ttk.Button(button_row, text="Run storage audit", command=self._run_storage_audit).pack(side="left", padx=8)
+        self.install_button = ttk.Button(
+            button_row,
+            text="Install selected model pack",
+            style="Accent.TButton",
+            command=self._install_pack,
+        )
+        self.install_button.pack(side="right")
 
         updates = ttk.Frame(self.models_tab, style="Subtle.TFrame", padding=18)
         updates.pack(fill="x", pady=(14, 0))
@@ -314,8 +321,6 @@ class AlviStudioApp(tk.Tk):
         actions = ttk.Frame(packs, style="Panel.TFrame")
         actions.pack(fill="x")
         ttk.Button(actions, text="Refresh", command=self._refresh_components).pack(side="left")
-        self.install_button = ttk.Button(actions, text="Install selected model pack", style="Accent.TButton", command=self._install_pack)
-        self.install_button.pack(side="right")
 
     def _build_projects_tab(self) -> None:
         ttk.Label(self.projects_tab, text="Recent projects", style="Section.Panel.TLabel").pack(anchor="w")
